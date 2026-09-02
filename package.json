@@ -1,0 +1,17 @@
+{
+  "name": "non-site-tester",
+  "version": "1.0.0",
+  "description": "A small local browser app for a11y audit screenshots, standalone images, PDFs, and video-audio audio description gap checks.",
+  "main": "app.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

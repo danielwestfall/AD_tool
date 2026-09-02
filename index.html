@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>A11y Review Toolkit</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>A11y Review Toolkit</h1>
+          <p>Check visual effects or estimate audio description space from video audio gaps.</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="mode-button active" id="visualModeButton" type="button">Visual effects</button>
+          <button class="mode-button" id="adModeButton" type="button">AD gap analyzer</button>
+        </div>
+      </header>
+
+      <section id="dropZone" class="workspace" aria-label="Visual preview workspace">
+        <aside class="controls" aria-label="Effect controls">
+          <div class="control-group">
+            <button id="pasteButton" type="button">Paste</button>
+            <label class="file-button" id="visualFileButton">
+              Load file
+              <input id="fileInput" type="file" accept="image/*,.pdf,application/pdf">
+            </label>
+          </div>
+
+          <div class="control-group">
+            <label for="effectSelect">Effect</label>
+            <select id="effectSelect">
+              <option value="normal">Original</option>
+              <option value="grayscale">Grayscale</option>
+              <option value="protanopia">Protanopia simulation</option>
+              <option value="deuteranopia">Deuteranopia simulation</option>
+              <option value="tritanopia">Tritanopia simulation</option>
+              <option value="achromatopsia">Achromatopsia simulation</option>
+              <option value="lowcontrast">Low contrast wash</option>
+              <option value="highcontrast">High contrast check</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="zoomRange">Zoom <span id="zoomValue">100%</span></label>
+            <input id="zoomRange" type="range" min="25" max="250" step="5" value="100">
+          </div>
+
+          <div class="control-group">
+            <label class="checkbox-row">
+              <input id="compareToggle" type="checkbox" checked>
+              Show original beside effect
+            </label>
+          </div>
+
+          <div id="pdfControls" class="control-group hidden">
+            <label for="pageSelect">PDF page</label>
+            <select id="pageSelect"></select>
+          </div>
+
+          <div class="control-group">
+            <button id="downloadButton" type="button" disabled>Download effect PNG</button>
+          </div>
+
+          <div class="notes">
+            <h2>Auditor Notes</h2>
+            <p id="statusText">Paste with Ctrl+V, click Paste, drag a file here, or load an image/PDF.</p>
+          </div>
+        </aside>
+
+        <section class="preview-area">
+          <div id="emptyState" class="empty-state">
+            <div class="empty-title">Drop, paste, or load a visual</div>
+            <div class="empty-copy">Screenshots from Snipping Tool copy straight in. PDFs render page by page.</div>
+          </div>
+
+          <div id="canvasGrid" class="canvas-grid hidden">
+            <figure class="preview-panel" id="originalPanel">
+              <figcaption>Original</figcaption>
+              <canvas id="originalCanvas"></canvas>
+            </figure>
+            <figure class="preview-panel">
+              <figcaption id="effectCaption">Effect</figcaption>
+              <canvas id="effectCanvas"></canvas>
+            </figure>
+          </div>
+        </section>
+      </section>
+
+      <section id="adWorkspace" class="ad-workspace hidden" aria-label="Audio description gap analyzer">
+        <aside class="controls ad-controls" aria-label="Video audio controls">
+          <div class="control-group">
+            <label for="videoUrlInput">Video, SMIL, HLS address, or Quaver VOD ID</label>
+            <input id="videoUrlInput" type="text" placeholder="9e467af4-5479-4c26-a393-c445a32acd19">
+          </div>
+
+          <div class="control-group">
+            <label for="videoFileInput">Video file</label>
+            <label class="file-button secondary">
+              Load video
+              <input id="videoFileInput" type="file" accept="video/*,audio/*">
+            </label>
+          </div>
+
+          <div class="control-group">
+            <label for="speechRateInput">AD speech rate</label>
+            <input id="speechRateInput" type="number" min="1" max="5" step="0.1" value="2.6">
+          </div>
+
+          <div class="control-group">
+            <label for="silenceThresholdInput">Speech threshold dB</label>
+            <input id="silenceThresholdInput" type="number" min="-80" max="-10" step="1" value="-45">
+          </div>
+
+          <div class="control-group">
+            <label for="speechLiftInput">Speech lift over music</label>
+            <input id="speechLiftInput" type="number" min="1" max="24" step="1" value="8">
+          </div>
+
+          <div class="control-group">
+            <label for="minGapInput">Minimum quiet gap</label>
+            <input id="minGapInput" type="number" min="0" max="30" step="0.1" value="1.0">
+          </div>
+
+          <div class="control-group">
+            <label for="paddingInput">Breathing room per gap</label>
+            <input id="paddingInput" type="number" min="0" max="3" step="0.1" value="0.4">
+          </div>
+
+          <div class="control-group">
+            <label for="scriptFileInput">AD script</label>
+            <label class="file-button secondary">
+              Load script
+              <input id="scriptFileInput" type="file" accept=".txt,.srt,.vtt,text/plain,text/vtt">
+            </label>
+          </div>
+
+          <div class="control-group">
+            <label class="checkbox-row">
+              <input id="noDialogueToggle" type="checkbox">
+              Treat as no dialogue
+            </label>
+          </div>
+
+          <div class="control-group">
+            <button id="analyzeAudioButton" type="button">Analyze video audio</button>
+          </div>
+
+          <div class="notes">
+            <h2>Auditor Notes</h2>
+            <p id="adStatusText">Paste a video, SMIL, or HLS URL, or load a video file, then analyze likely AD openings in the audio.</p>
+          </div>
+        </aside>
+
+        <section class="ad-main">
+          <div class="video-review">
+            <video id="videoPreview" controls preload="metadata"></video>
+          </div>
+
+          <section class="waveform-panel" aria-label="Audio level visualization">
+            <div class="waveform-head">
+              <h2>Audio Levels</h2>
+              <div class="waveform-tools" aria-label="Waveform zoom controls">
+                <button id="waveformZoomOutButton" class="icon-button" type="button" aria-label="Zoom waveform out">-</button>
+                <label for="waveformZoomInput">Zoom <span id="waveformZoomValue">1x</span></label>
+                <input id="waveformZoomInput" type="range" min="1" max="12" step="0.5" value="1">
+                <button id="waveformZoomInButton" class="icon-button" type="button" aria-label="Zoom waveform in">+</button>
+              </div>
+              <div class="waveform-legend">
+                <span><i class="legend-mix"></i>Full mix</span>
+                <span><i class="legend-voice"></i>Speech band</span>
+                <span><i class="legend-cutoff"></i>Cutoff</span>
+                <span><i class="legend-gap"></i>Detected gap</span>
+                <span><i class="legend-good-gap"></i>Good gap</span>
+                <span><i class="legend-risk"></i>Script risk</span>
+              </div>
+            </div>
+            <div class="waveform-canvas-wrap">
+              <canvas id="waveformCanvas" width="1200" height="260"></canvas>
+              <div id="waveformTooltip" class="waveform-tooltip hidden"></div>
+            </div>
+          </section>
+
+          <section class="gap-summary" aria-label="Gap summary">
+            <div>
+              <span id="gapCount">0</span>
+              <small>usable gaps</small>
+            </div>
+            <div>
+              <span id="totalGapTime">0.0s</span>
+              <small>total available</small>
+            </div>
+            <div>
+              <span id="maxSuggestedWords">0</span>
+              <small>words in best gap</small>
+            </div>
+            <div>
+              <span id="scriptFitValue">0/0</span>
+              <small>script words fit</small>
+            </div>
+          </section>
+
+          <section class="script-panel" aria-label="Audio description script fit">
+            <div class="script-head">
+              <h2>AD Script Fit</h2>
+              <span id="scriptStats">0 words, 0.0s estimated</span>
+            </div>
+            <div class="script-actions">
+              <label class="checkbox-row">
+                <input id="ttsSyncToggle" type="checkbox">
+                Speak script during playback
+              </label>
+              <label class="checkbox-row">
+                <input id="extendedAdToggle" type="checkbox">
+                Pause for extended AD
+              </label>
+              <label for="ttsRateInput">TTS speed <span id="ttsRateValue">1x</span></label>
+              <input id="ttsRateInput" type="range" min="0.5" max="2" step="0.1" value="1">
+              <label for="ttsVoiceSelect">Voice</label>
+              <select id="ttsVoiceSelect">
+                <option value="">System default</option>
+              </select>
+              <button id="stopTtsButton" type="button">Stop TTS</button>
+            </div>
+            <textarea id="scriptInput" spellcheck="true" placeholder="Paste proposed audio description copy here. The table will show whether the full script fits each detected gap."></textarea>
+            <div class="script-review-grid">
+              <section class="script-review-panel" aria-label="Script cue navigator">
+                <div class="script-review-head">
+                  <h3>Script Cues</h3>
+                  <span id="scriptCueSummary">No timed cues</span>
+                </div>
+                <div id="scriptCueList" class="review-list"></div>
+              </section>
+              <section class="script-review-panel" aria-label="Gaps without AD script">
+                <div class="script-review-head">
+                  <h3>Gaps Without Script</h3>
+                  <span id="missingScriptSummary">0 gaps</span>
+                </div>
+                <div id="missingScriptGapList" class="review-list"></div>
+              </section>
+            </div>
+          </section>
+
+          <div class="results-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Gap</th>
+                  <th>Window</th>
+                  <th>Duration</th>
+                  <th>Suggested AD room</th>
+                  <th>Script fit</th>
+                  <th>Audio read</th>
+                </tr>
+              </thead>
+              <tbody id="gapResults">
+                <tr>
+                  <td colspan="6" class="empty-row">No analysis yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
