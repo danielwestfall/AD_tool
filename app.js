@@ -29,8 +29,10 @@ const waveformZoomInput = document.querySelector("#waveformZoomInput");
 const waveformZoomValue = document.querySelector("#waveformZoomValue");
 const waveformZoomOutButton = document.querySelector("#waveformZoomOutButton");
 const waveformZoomInButton = document.querySelector("#waveformZoomInButton");
+const waveformFollowToggle = document.querySelector("#waveformFollowToggle");
 const silenceThresholdInput = document.querySelector("#silenceThresholdInput");
 const speechLiftInput = document.querySelector("#speechLiftInput");
+const cutoffStatusText = document.querySelector("#cutoffStatusText");
 const minGapInput = document.querySelector("#minGapInput");
 const paddingInput = document.querySelector("#paddingInput");
 const scriptFileInput = document.querySelector("#scriptFileInput");
@@ -49,6 +51,7 @@ const extendedAdToggle = document.querySelector("#extendedAdToggle");
 const ttsRateInput = document.querySelector("#ttsRateInput");
 const ttsRateValue = document.querySelector("#ttsRateValue");
 const ttsVoiceSelect = document.querySelector("#ttsVoiceSelect");
+const saveScriptButton = document.querySelector("#saveScriptButton");
 const stopTtsButton = document.querySelector("#stopTtsButton");
 const scriptCueSummary = document.querySelector("#scriptCueSummary");
 const scriptCueList = document.querySelector("#scriptCueList");
@@ -91,8 +94,11 @@ let currentGapRows = [];
 let waveformGapRegions = [];
 let scriptItems = [];
 let spokenScriptItemIds = new Set();
+let lastTtsPlaybackTime = 0;
 let activeGapIndex = -1;
 let isExtendedAdPause = false;
+let isResumingAfterExtendedAd = false;
+let loadedScriptFileName = "audio-description-script.txt";
 const activePdfScale = 1.6;
 
 const clamp = (value) => Math.max(0, Math.min(255, value));
@@ -135,8 +141,8 @@ function syncCompareView() {
 function resizeCanvas(canvas, width, height) {
   canvas.width = width;
   canvas.height = height;
-  canvas.style.width = `${Math.round(width * Number(zoomRange.value) / 100)}px`;
-  canvas.style.height = `${Math.round(height * Number(zoomRange.value) / 100)}px`;
+  canvas.style.width = Math.round(width * Number(zoomRange.value) / 100) + "px";
+  canvas.style.height = Math.round(height * Number(zoomRange.value) / 100) + "px";
 }
 
 function drawSourceToOriginalCanvas(image) {
@@ -199,11 +205,11 @@ function applyEffect() {
 }
 
 function refreshZoom() {
-  zoomValue.textContent = `${zoomRange.value}%`;
+  zoomValue.textContent = zoomRange.value + "%";
   for (const canvas of [originalCanvas, effectCanvas]) {
     if (canvas.width && canvas.height) {
-      canvas.style.width = `${Math.round(canvas.width * Number(zoomRange.value) / 100)}px`;
-      canvas.style.height = `${Math.round(canvas.height * Number(zoomRange.value) / 100)}px`;
+      canvas.style.width = Math.round(canvas.width * Number(zoomRange.value) / 100) + "px";
+      canvas.style.height = Math.round(canvas.height * Number(zoomRange.value) / 100) + "px";
     }
   }
 }
@@ -214,8 +220,8 @@ function formatTimestamp(seconds) {
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   const wholeSeconds = Math.floor(safeSeconds % 60);
   const milliseconds = Math.round((safeSeconds - Math.floor(safeSeconds)) * 1000);
-  const prefix = hours ? `${String(hours).padStart(2, "0")}:` : "";
-  return `${prefix}${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+  const prefix = hours ? String(hours).padStart(2, "0") + ":" : "";
+  return prefix + String(minutes).padStart(2, "0") + ":" + String(wholeSeconds).padStart(2, "0") + "." + String(milliseconds).padStart(3, "0");
 }
 
 function parseTimestamp(value) {
@@ -239,36 +245,79 @@ function countWords(text) {
 }
 
 function cleanScriptText(text) {
-  return text
+  return normalizeScriptText(text)
+    .replace(/(?:^|\s)(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?(?:\s*(?:-->|[-–])\s*(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)?\s*(?:[-–])?/g, " ")
     .replace(/^\d+\s*$/gm, "")
     .replace(/<[^>]+>/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+window.__cleanScriptTextForTest = () => cleanScriptText(scriptInput.value);
+
+function normalizeScriptText(text) {
+  return text
+    .replace(/\r/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#x20;/gi, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/\\n/g, "\n")
+    .replace(/\\+\s*/g, "\n");
+}
+
+function scriptHasTimestamp(text) {
+  return /(?:^|[^0-9])(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?(?:[^0-9]|$)/.test(normalizeScriptText(text));
+}
+
 function parseScriptItems(text) {
-  const normalized = text.replace(/\r/g, "");
+  const normalized = normalizeScriptText(text);
   const items = [];
-  const linePattern = /^\s*((?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\s*(?:-->|[-–])\s*((?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\s*(?:[-–])?\s*(.+?)\s*$/gm;
-  let match = linePattern.exec(normalized);
+  const timeValue = "(?:\\d{1,2}:)?\\d{1,2}:\\d{2}(?:[.,]\\d{1,3})?";
+  const cuePattern = new RegExp("(^|\\s)(" + timeValue + ")(?:\\s*(?:-->|[-–])\\s*(" + timeValue + "))?\\s*(?:[-–])?\\s*", "g");
+  const matches = [];
+  let match = cuePattern.exec(normalized);
 
   while (match) {
-    const start = parseTimestamp(match[1]);
-    const end = parseTimestamp(match[2]);
-    const textValue = cleanScriptText(match[3]);
+    matches.push({
+      index: match.index + match[1].length,
+      endIndex: cuePattern.lastIndex,
+      startRaw: match[2],
+      endRaw: match[3] || "",
+    });
+    match = cuePattern.exec(normalized);
+  }
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const cue = matches[index];
+    const nextCue = matches[index + 1];
+    const start = parseTimestamp(cue.startRaw);
+    const explicitEnd = cue.endRaw ? parseTimestamp(cue.endRaw) : null;
+    const end = explicitEnd ?? start;
+    const textValue = cleanScriptText(normalized.slice(cue.endIndex, nextCue ? nextCue.index : normalized.length));
     if (start !== null && end !== null && end >= start && textValue) {
       items.push({
-        id: `${items.length}-${start}-${end}`,
+        id: items.length + "-" + start + "-" + end,
         start,
         end,
         text: textValue,
         words: countWords(textValue),
+        singleTimestamp: explicitEnd === null,
       });
     }
-    match = linePattern.exec(normalized);
   }
 
-  if (items.length) return items;
+  if (items.length) {
+    items.sort((a, b) => a.start - b.start);
+    items.forEach((item, index) => {
+      const nextItem = items[index + 1];
+      item.windowEnd = item.singleTimestamp
+        ? nextItem
+          ? Math.max(item.start, nextItem.start)
+          : item.start + Math.max(1, item.words / Math.max(1, Number(speechRateInput.value)))
+        : item.end;
+    });
+    return items;
+  }
 
   const captionBlocks = normalized.split(/\n{2,}/);
   for (const block of captionBlocks) {
@@ -282,7 +331,7 @@ function parseScriptItems(text) {
     const textValue = cleanScriptText(lines.slice(timingIndex + 1).join(" "));
     if (start !== null && end !== null && end >= start && textValue) {
       items.push({
-        id: `${items.length}-${start}-${end}`,
+        id: items.length + "-" + start + "-" + end,
         start,
         end,
         text: textValue,
@@ -300,7 +349,13 @@ function getScriptForGap(gap) {
     return { text, words: countWords(text), seconds: Number(speechRateInput.value) > 0 ? countWords(text) / Number(speechRateInput.value) : 0, timed: false };
   }
 
-  const matchingItems = scriptItems.filter((item) => item.end >= gap.start - 0.35 && item.start <= gap.end + 0.35);
+  const matchingItems = scriptItems.filter((item) => {
+    if (item.singleTimestamp) {
+      return item.start >= gap.start - 0.35 && item.start <= gap.end + 0.35;
+    }
+    const itemEnd = getScriptItemPlaybackEnd(item);
+    return itemEnd >= gap.start - 0.35 && item.start <= gap.end + 0.35;
+  });
   const text = matchingItems.map((item) => item.text).join(" ");
   const words = matchingItems.reduce((sum, item) => sum + item.words, 0);
   return { text, words, seconds: Number(speechRateInput.value) > 0 ? words / Number(speechRateInput.value) : 0, timed: true };
@@ -308,6 +363,7 @@ function getScriptForGap(gap) {
 
 function getScriptStats() {
   scriptItems = parseScriptItems(scriptInput.value);
+  window.__scriptItemsForTest = scriptItems;
   const words = scriptItems.length
     ? scriptItems.reduce((sum, item) => sum + item.words, 0)
     : countWords(scriptInput.value);
@@ -317,17 +373,17 @@ function getScriptStats() {
 
 function updateScriptStats() {
   const { words, seconds } = getScriptStats();
-  const itemText = scriptItems.length ? `, ${scriptItems.length} cue${scriptItems.length === 1 ? "" : "s"}` : "";
-  scriptStats.textContent = `${words} word${words === 1 ? "" : "s"}${itemText}, ${seconds.toFixed(1)}s estimated`;
+  const itemText = scriptItems.length ? ", " + scriptItems.length + " cue" + (scriptItems.length === 1 ? "" : "s") : "";
+  scriptStats.textContent = words + " word" + (words === 1 ? "" : "s") + itemText + ", " + seconds.toFixed(1) + "s estimated";
 
   if (!lastAnalysis?.gaps?.length) {
-    scriptFitValue.textContent = `${words}/0`;
+    scriptFitValue.textContent = words + "/0";
     renderScriptReview();
     return;
   }
 
   const bestWords = Math.max(0, ...lastAnalysis.gaps.map((gap) => gap.suggestedWords));
-  scriptFitValue.textContent = `${words}/${bestWords}`;
+  scriptFitValue.textContent = words + "/" + bestWords;
   renderScriptReview();
 }
 
@@ -349,27 +405,44 @@ function getGapScriptFit(gap) {
 function findBestGapForScriptItem(item) {
   const gaps = lastAnalysis?.gaps || [];
   if (!gaps.length) return null;
+  if (item.singleTimestamp) {
+    const timedMatch = gaps.find((gap) => item.start >= gap.start - 0.35 && item.start <= gap.end + 0.35);
+    if (!timedMatch) return null;
+    return {
+      gap: timedMatch,
+      index: gaps.indexOf(timedMatch),
+      overlap: Math.max(0.1, Math.min(timedMatch.end, getScriptItemPlaybackEnd(item)) - item.start),
+    };
+  }
+
   const overlaps = gaps
     .map((gap, index) => ({
       gap,
       index,
-      overlap: Math.max(0, Math.min(gap.end, item.end) - Math.max(gap.start, item.start)),
+      overlap: Math.max(0, Math.min(gap.end, getScriptItemPlaybackEnd(item)) - Math.max(gap.start, item.start)),
     }))
     .filter((entry) => entry.overlap > 0)
     .sort((a, b) => b.overlap - a.overlap);
   return overlaps[0] || null;
 }
 
+function getScriptItemPlaybackEnd(item) {
+  const cueSeconds = Number(speechRateInput.value) > 0 ? item.words / Number(speechRateInput.value) : 0;
+  if (item.singleTimestamp) return item.start + cueSeconds;
+  return item.windowEnd ?? item.end;
+}
+
 function getScriptItemFit(item) {
   const match = findBestGapForScriptItem(item);
   const padding = Number(paddingInput.value);
   const cueSeconds = Number(speechRateInput.value) > 0 ? item.words / Number(speechRateInput.value) : 0;
+  const itemEnd = getScriptItemPlaybackEnd(item);
   if (!match) {
     return {
       gap: null,
       index: -1,
       cueSeconds,
-      requiredWps: item.words / Math.max(0.1, item.end - item.start),
+      requiredWps: item.words / Math.max(0.1, itemEnd - item.start),
       status: "No matching no-dialogue gap",
       fits: false,
       risk: true,
@@ -378,13 +451,13 @@ function getScriptItemFit(item) {
 
   const usableDuration = Math.max(0, match.gap.duration - padding);
   const requiredWps = item.words / Math.max(0.1, usableDuration);
-  const fullyInsideGap = item.start >= match.gap.start - 0.05 && item.end <= match.gap.end + 0.05;
+  const fullyInsideGap = item.start >= match.gap.start - 0.05 && itemEnd <= match.gap.end + 0.05;
   const fits = item.words <= match.gap.suggestedWords && fullyInsideGap;
   const status = fits
-    ? `Fits gap ${match.index + 1}`
+    ? "Fits gap " + (match.index + 1)
     : fullyInsideGap
-      ? `Needs ${requiredWps.toFixed(1)} wps`
-      : `May step on dialogue near gap ${match.index + 1}`;
+      ? "Needs " + requiredWps.toFixed(1) + " wps"
+      : "May step on dialogue near gap " + (match.index + 1);
   return {
     gap: match.gap,
     index: match.index,
@@ -406,6 +479,28 @@ function scrollWaveformToTime(time) {
   wrapper.scrollLeft = Math.max(0, targetX - wrapper.clientWidth * 0.35);
 }
 
+function followWaveformPlayhead() {
+  if (!waveformFollowToggle.checked || !lastAudioDuration) return;
+  const wrapper = waveformCanvas.parentElement;
+  if (!wrapper || wrapper.scrollWidth <= wrapper.clientWidth) return;
+
+  const rect = waveformCanvas.getBoundingClientRect();
+  const styleWidth = rect.width;
+  const padLeft = 56;
+  const padRight = 18;
+  const plotWidth = Math.max(1, styleWidth - padLeft - padRight);
+  const playheadX = padLeft + ((Number(videoPreview.currentTime) || 0) / lastAudioDuration) * plotWidth;
+  const visibleStart = wrapper.scrollLeft;
+  const visibleEnd = visibleStart + wrapper.clientWidth;
+  const guard = Math.min(140, Math.max(48, wrapper.clientWidth * 0.18));
+
+  if (playheadX > visibleEnd - guard) {
+    wrapper.scrollLeft = Math.min(wrapper.scrollWidth - wrapper.clientWidth, playheadX - wrapper.clientWidth * 0.35);
+  } else if (playheadX < visibleStart + guard) {
+    wrapper.scrollLeft = Math.max(0, playheadX - wrapper.clientWidth * 0.35);
+  }
+}
+
 function navigateToTime(time, play = true) {
   if (Number.isFinite(time)) {
     videoPreview.currentTime = Math.max(0, time);
@@ -418,7 +513,7 @@ function navigateToTime(time, play = true) {
 function makeReviewItem({ title, meta, copy, risk = false, ok = false, onClick }) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `review-item${risk ? " risk" : ""}${ok ? " ok" : ""}`;
+  button.className = "review-item" + (risk ? " risk" : "") + (ok ? " ok" : "");
   button.addEventListener("click", onClick);
 
   const titleEl = document.createElement("span");
@@ -455,11 +550,13 @@ function renderScriptReview() {
       const fit = getScriptItemFit(item);
       riskyCount += fit.risk ? 1 : 0;
       const recommendation = fit.gap
-        ? `Gap ${fit.index + 1}, ${item.words} words, recommend ${fit.requiredWps.toFixed(1)} wps or slower`
-        : `${item.words} words, no detected gap`;
+        ? "Gap " + (fit.index + 1) + ", " + item.words + " words, recommend " + fit.requiredWps.toFixed(1) + " wps or slower"
+        : item.words + " words, no detected gap";
       const button = makeReviewItem({
-        title: `${formatTimestamp(item.start)} - ${formatTimestamp(item.end)}`,
-        meta: `${fit.status}. ${recommendation}.`,
+        title: item.singleTimestamp
+          ? formatTimestamp(item.start)
+          : formatTimestamp(item.start) + " - " + formatTimestamp(item.end),
+        meta: fit.status + ". " + recommendation + ".",
         copy: item.text,
         risk: fit.risk,
         ok: fit.fits,
@@ -468,14 +565,14 @@ function renderScriptReview() {
       button.dataset.scriptItemId = item.id;
       scriptCueList.append(button);
     });
-    scriptCueSummary.textContent = `${scriptItems.length} cues, ${riskyCount} risk${riskyCount === 1 ? "" : "s"}`;
+    scriptCueSummary.textContent = scriptItems.length + " cues, " + riskyCount + " risk" + (riskyCount === 1 ? "" : "s");
   }
 
   const gaps = lastAnalysis?.gaps || [];
   const missingGaps = gaps
     .map((gap, index) => ({ gap, index, fit: getGapScriptFit(gap) }))
     .filter((entry) => !entry.fit.hasScript);
-  missingScriptSummary.textContent = `${missingGaps.length} gap${missingGaps.length === 1 ? "" : "s"}`;
+  missingScriptSummary.textContent = missingGaps.length + " gap" + (missingGaps.length === 1 ? "" : "s");
 
   if (!missingGaps.length) {
     const empty = document.createElement("div");
@@ -487,12 +584,47 @@ function renderScriptReview() {
 
   missingGaps.forEach(({ gap, index }) => {
     missingScriptGapList.append(makeReviewItem({
-      title: `Gap ${index + 1}: ${formatTimestamp(gap.start)} - ${formatTimestamp(gap.end)}`,
-      meta: `${gap.duration.toFixed(2)}s, ${gap.suggestedWords} words available`,
+      title: "Gap " + (index + 1) + ": " + formatTimestamp(gap.start) + " - " + formatTimestamp(gap.end),
+      meta: gap.duration.toFixed(2) + "s, " + gap.suggestedWords + " words available",
       copy: gap.label,
       onClick: () => navigateToTime(gap.start),
     }));
   });
+}
+
+async function saveScript() {
+  const scriptText = scriptInput.value;
+  const suggestedName = loadedScriptFileName || "audio-description-script.txt";
+
+  if ("showSaveFilePicker" in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{
+          description: "Text files",
+          accept: { "text/plain": [".txt", ".srt", ".vtt"] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(scriptText);
+      await writable.close();
+      loadedScriptFileName = handle.name || suggestedName;
+      setAdStatus("Saved script as " + loadedScriptFileName + ".");
+      return;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        setAdStatus("Script save canceled.");
+        return;
+      }
+    }
+  }
+
+  const link = document.createElement("a");
+  link.download = suggestedName;
+  link.href = URL.createObjectURL(new Blob([scriptText], { type: "text/plain" }));
+  link.click();
+  URL.revokeObjectURL(link.href);
+  setAdStatus("Downloaded edited script as " + suggestedName + ".");
 }
 
 function dbFromRms(rms) {
@@ -512,6 +644,24 @@ function percentile(values, amount) {
   return sorted[index];
 }
 
+function getCutoffDetails(frames) {
+  const baseCutoff = Number(silenceThresholdInput.value);
+  const musicBedDb = percentile(frames.map((frame) => frame.voiceDb), 0.2);
+  const adaptiveCutoff = musicBedDb + Number(speechLiftInput.value);
+  const threshold = Math.max(baseCutoff, adaptiveCutoff);
+  const source = threshold === baseCutoff ? "base cutoff" : "music cutoff";
+  return { baseCutoff, musicBedDb, adaptiveCutoff, threshold, source };
+}
+
+function updateCutoffStatus(details = null) {
+  if (!details) {
+    cutoffStatusText.textContent = "Active cutoff appears after analysis.";
+    return;
+  }
+
+  cutoffStatusText.textContent = "Active cutoff " + details.threshold.toFixed(1) + " dB from " + details.source + ". Base " + details.baseCutoff.toFixed(1) + " dB; music " + details.musicBedDb.toFixed(1) + " dB + lift = " + details.adaptiveCutoff.toFixed(1) + " dB.";
+}
+
 function fitCanvasToDisplay(canvas) {
   const pixelRatio = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -528,8 +678,8 @@ function fitCanvasToDisplay(canvas) {
 
 function refreshWaveformZoom() {
   const zoom = Number(waveformZoomInput.value);
-  waveformZoomValue.textContent = `${zoom.toFixed(zoom % 1 ? 1 : 0)}x`;
-  waveformCanvas.style.width = `${zoom * 100}%`;
+  waveformZoomValue.textContent = zoom.toFixed(zoom % 1 ? 1 : 0) + "x";
+  waveformCanvas.style.width = (zoom * 100) + "%";
 }
 
 function drawLine(ctx, points, color, xForTime, yForDb) {
@@ -591,7 +741,7 @@ function drawWaveform(frames = lastAudioFrames, analysis = null) {
 
   ctx.strokeStyle = "#d7dde6";
   ctx.lineWidth = 1;
-  ctx.font = `${12 * pixelRatio}px Arial, Helvetica, sans-serif`;
+  ctx.font = (12 * pixelRatio) + "px Arial, Helvetica, sans-serif";
   ctx.fillStyle = "#404b59";
 
   for (let db = minDb; db <= maxDb; db += 20) {
@@ -600,7 +750,7 @@ function drawWaveform(frames = lastAudioFrames, analysis = null) {
     ctx.moveTo(plotLeft, y);
     ctx.lineTo(plotRight, y);
     ctx.stroke();
-    ctx.fillText(`${db} dB`, 8 * pixelRatio, y + 4 * pixelRatio);
+    ctx.fillText(db + " dB", 8 * pixelRatio, y + 4 * pixelRatio);
   }
 
   const timeStep = duration > 180 ? 60 : duration > 60 ? 30 : 10;
@@ -656,7 +806,7 @@ function drawWaveform(frames = lastAudioFrames, analysis = null) {
         const fit = getScriptItemFit(item);
         if (!fit.risk) continue;
         const x = xForTime(item.start);
-        const cueWidth = Math.max(2, xForTime(item.end) - x);
+        const cueWidth = Math.max(2, xForTime(getScriptItemPlaybackEnd(item)) - x);
         ctx.fillStyle = "rgba(192, 59, 43, 0.20)";
         ctx.fillRect(x, plotTop, cueWidth, plotBottom - plotTop);
         ctx.strokeStyle = "#8b261d";
@@ -671,8 +821,8 @@ function drawWaveform(frames = lastAudioFrames, analysis = null) {
   drawLine(ctx, frames.map((frame) => ({ ...frame, value: frame.voiceDb })), "#084e55", xForTime, yForDb);
 
   if (analysis) {
-    drawHorizontalGuide(ctx, yForDb(analysis.musicBedDb), `music bed ${analysis.musicBedDb.toFixed(1)} dB`, "#404b59", plotLeft, plotRight);
-    drawHorizontalGuide(ctx, yForDb(analysis.threshold), `cutoff ${analysis.threshold.toFixed(1)} dB`, "#8b261d", plotLeft, plotRight);
+    drawHorizontalGuide(ctx, yForDb(analysis.musicBedDb), "music bed " + analysis.musicBedDb.toFixed(1) + " dB", "#404b59", plotLeft, plotRight);
+    drawHorizontalGuide(ctx, yForDb(analysis.threshold), "cutoff " + analysis.threshold.toFixed(1) + " dB", "#8b261d", plotLeft, plotRight);
   }
 
   if (Number.isFinite(videoPreview.currentTime) && duration > 0) {
@@ -712,6 +862,8 @@ function updatePlaybackIndicators() {
     button.classList.toggle("active-cue", Boolean(item && time >= item.start && time <= item.end));
   }
 
+  followWaveformPlayhead();
+
   if (lastAudioFrames.length) {
     drawWaveform(lastAudioFrames, lastAnalysis);
   }
@@ -723,16 +875,16 @@ function formatScriptFitForGap(gap) {
   if (!words) return "No script loaded";
   const delta = gap.suggestedWords - words;
   return delta >= 0
-    ? `Script fits with ${delta} word${delta === 1 ? "" : "s"} spare (${seconds.toFixed(1)}s est.)`
-    : `Script is ${Math.abs(delta)} word${Math.abs(delta) === 1 ? "" : "s"} over (${seconds.toFixed(1)}s est.)`;
+    ? "Script fits with " + delta + " word" + (delta === 1 ? "" : "s") + " spare (" + seconds.toFixed(1) + "s est.)"
+    : "Script is " + Math.abs(delta) + " word" + (Math.abs(delta) === 1 ? "" : "s") + " over (" + seconds.toFixed(1) + "s est.)";
 }
 
 function showWaveformTooltip(region, event) {
   waveformTooltip.innerHTML = "";
   const title = document.createElement("strong");
-  title.textContent = `${formatTimestamp(region.gap.start)} - ${formatTimestamp(region.gap.end)}`;
+  title.textContent = formatTimestamp(region.gap.start) + " - " + formatTimestamp(region.gap.end);
   const details = document.createElement("div");
-  details.textContent = `${region.gap.duration.toFixed(2)}s, ${region.gap.suggestedWords} AD words`;
+  details.textContent = region.gap.duration.toFixed(2) + "s, " + region.gap.suggestedWords + " AD words";
   const fit = document.createElement("div");
   fit.textContent = formatScriptFitForGap(region.gap);
   waveformTooltip.append(title, details, fit);
@@ -741,8 +893,8 @@ function showWaveformTooltip(region, event) {
   const maxTooltipX = Math.max(8, wrapRect.width - 272);
   const tooltipX = Math.min(maxTooltipX, Math.max(8, event.clientX - wrapRect.left + 12));
   const tooltipY = Math.max(8, event.clientY - wrapRect.top - 58);
-  waveformTooltip.style.left = `${tooltipX}px`;
-  waveformTooltip.style.top = `${tooltipY}px`;
+  waveformTooltip.style.left = tooltipX + "px";
+  waveformTooltip.style.top = tooltipY + "px";
   waveformTooltip.classList.remove("hidden");
 }
 
@@ -784,7 +936,7 @@ function seekWaveformGap(event) {
 
 function refreshTtsRate() {
   const rate = Number(ttsRateInput.value) || 1;
-  ttsRateValue.textContent = `${rate.toFixed(rate % 1 ? 1 : 0)}x`;
+  ttsRateValue.textContent = rate.toFixed(rate % 1 ? 1 : 0) + "x";
 }
 
 function populateTtsVoices() {
@@ -799,7 +951,7 @@ function populateTtsVoices() {
   voices.forEach((voice) => {
     const option = document.createElement("option");
     option.value = voice.voiceURI;
-    option.textContent = `${voice.name}${voice.lang ? ` (${voice.lang})` : ""}`;
+    option.textContent = voice.name + (voice.lang ? " (" + voice.lang + ")" : "");
     ttsVoiceSelect.append(option);
   });
 
@@ -816,6 +968,7 @@ function getSelectedTtsVoice() {
 function speakText(text, options = {}) {
   if (!("speechSynthesis" in window) || !text.trim()) return;
   window.speechSynthesis.cancel();
+  window.__lastSpokenTextForTest = text.trim();
   const utterance = new SpeechSynthesisUtterance(text.trim());
   const selectedVoice = getSelectedTtsVoice();
   if (selectedVoice) utterance.voice = selectedVoice;
@@ -825,6 +978,7 @@ function speakText(text, options = {}) {
     utterance.addEventListener("end", () => {
       isExtendedAdPause = false;
       if (ttsSyncToggle.checked && extendedAdToggle.checked && !videoPreview.ended) {
+        isResumingAfterExtendedAd = true;
         videoPreview.play().catch(() => {});
       }
     });
@@ -835,26 +989,47 @@ function speakText(text, options = {}) {
   window.speechSynthesis.speak(utterance);
 }
 
+window.__runTtsPlaybackForTest = handleTtsPlayback;
+
 function resetUpcomingTts() {
   const currentTime = Number(videoPreview.currentTime) || 0;
-  spokenScriptItemIds = new Set([...spokenScriptItemIds].filter((id) => {
+  const nextSpokenIds = new Set([...spokenScriptItemIds].filter((id) => {
     const item = scriptItems.find((scriptItem) => scriptItem.id === id);
     return item && item.start < currentTime;
   }));
+  scriptItems.forEach((item) => {
+    if (item.start < currentTime - 0.25) nextSpokenIds.add(item.id);
+  });
+  spokenScriptItemIds = nextSpokenIds;
+  lastTtsPlaybackTime = currentTime;
+}
+
+function resetTtsTimelineToCurrentPosition() {
+  spokenScriptItemIds.clear();
+  scriptItems = parseScriptItems(scriptInput.value);
+  resetUpcomingTts();
 }
 
 function handleTtsPlayback() {
   if (!ttsSyncToggle.checked || videoPreview.paused || videoPreview.ended) return;
 
   const currentTime = Number(videoPreview.currentTime) || 0;
+  scriptItems = parseScriptItems(scriptInput.value);
   if (scriptItems.length) {
+    scriptItems.forEach((item) => {
+      if (item.start < currentTime - 1.25) spokenScriptItemIds.add(item.id);
+    });
+    const priorTime = Math.min(lastTtsPlaybackTime, currentTime);
     const cue = scriptItems.find((item) => (
-      currentTime >= item.start
-      && currentTime <= item.end + 0.25
+      item.start >= Math.max(0, priorTime - 0.1)
+      && item.start <= currentTime + 0.35
+      && currentTime - item.start <= 1.25
       && !spokenScriptItemIds.has(item.id)
     ));
+    lastTtsPlaybackTime = currentTime;
     if (cue) {
       spokenScriptItemIds.add(cue.id);
+      window.__lastTtsCueForTest = cue;
       if (extendedAdToggle.checked) {
         isExtendedAdPause = true;
         videoPreview.pause();
@@ -866,13 +1041,15 @@ function handleTtsPlayback() {
     return;
   }
 
+  if (scriptHasTimestamp(scriptInput.value) || extendedAdToggle.checked) return;
+
   const gapRegion = currentGapRows.find((item) => (
     currentTime >= item.gap.start
     && currentTime <= item.gap.end
   ));
   if (!gapRegion) return;
 
-  const id = `gap-${gapRegion.gap.start}-${gapRegion.gap.end}`;
+  const id = "gap-" + gapRegion.gap.start + "-" + gapRegion.gap.end;
   if (!spokenScriptItemIds.has(id)) {
     spokenScriptItemIds.add(id);
     const text = cleanScriptText(scriptInput.value);
@@ -908,14 +1085,14 @@ function renderGapRows(gaps) {
     gapNumber.textContent = String(index + 1);
 
     const windowCell = document.createElement("td");
-    windowCell.textContent = `${formatTimestamp(gap.start)} - ${formatTimestamp(gap.end)}`;
+    windowCell.textContent = formatTimestamp(gap.start) + " - " + formatTimestamp(gap.end);
 
     const durationCell = document.createElement("td");
-    durationCell.textContent = `${gap.duration.toFixed(2)}s`;
+    durationCell.textContent = gap.duration.toFixed(2) + "s";
 
     const suggestionCell = document.createElement("td");
     const wordCount = document.createElement("strong");
-    wordCount.textContent = `${gap.suggestedWords} words`;
+    wordCount.textContent = gap.suggestedWords + " words";
     const label = document.createElement("span");
     label.textContent = gap.label;
     suggestionCell.append(wordCount, document.createElement("br"), label);
@@ -928,12 +1105,12 @@ function renderGapRows(gaps) {
     fitValue.className = !gapScript.hasScript || gapScript.fits ? "fit-pass" : "fit-fail";
     fitValue.textContent = gapScript.hasScript
       ? gapScript.fits
-        ? `Fits, ${gapScript.delta} spare`
-        : `${Math.abs(gapScript.delta)} over`
+        ? "Fits, " + gapScript.delta + " spare"
+        : Math.abs(gapScript.delta) + " over"
       : "No script";
     const durationNote = document.createElement("span");
     durationNote.textContent = gapScript.hasScript
-      ? `${gapScript.words} words, ${gapScript.seconds.toFixed(1)}s est., ${gapScript.requiredWps.toFixed(1)} wps needed`
+      ? gapScript.words + " words, " + gapScript.seconds.toFixed(1) + "s est., " + gapScript.requiredWps.toFixed(1) + " wps needed"
       : "Paste or load copy";
     fitCell.append(fitValue, document.createElement("br"), durationNote);
 
@@ -941,11 +1118,11 @@ function renderGapRows(gaps) {
     const voiceLabel = document.createElement("span");
     voiceLabel.className = "context-label";
     voiceLabel.textContent = "Voice";
-    const voiceText = document.createTextNode(` ${gap.avgVoiceDb.toFixed(1)} dB`);
+    const voiceText = document.createTextNode(" " + gap.avgVoiceDb.toFixed(1) + " dB");
     const mixLabel = document.createElement("span");
     mixLabel.className = "context-label";
     mixLabel.textContent = "Mix";
-    const mixText = document.createTextNode(` ${gap.avgFullDb.toFixed(1)} dB`);
+    const mixText = document.createTextNode(" " + gap.avgFullDb.toFixed(1) + " dB");
     contextCell.append(voiceLabel, voiceText, document.createElement("br"), mixLabel, mixText);
 
     row.append(gapNumber, windowCell, durationCell, suggestionCell, fitCell, contextCell);
@@ -1014,10 +1191,8 @@ function measureFrames(fullData, voiceData, sampleRate) {
 }
 
 function findLowSpeechGaps(frames) {
-  const absoluteThreshold = Number(silenceThresholdInput.value);
-  const musicBedDb = percentile(frames.map((frame) => frame.voiceDb), 0.2);
-  const adaptiveThreshold = musicBedDb + Number(speechLiftInput.value);
-  const threshold = Math.max(absoluteThreshold, adaptiveThreshold);
+  const cutoffDetails = getCutoffDetails(frames);
+  const { threshold, musicBedDb } = cutoffDetails;
   const minGap = Number(minGapInput.value);
   const speechRate = Number(speechRateInput.value);
   const padding = Number(paddingInput.value);
@@ -1053,6 +1228,7 @@ function findLowSpeechGaps(frames) {
     }
   }
   flushGap();
+  updateCutoffStatus(cutoffDetails);
   return { gaps, threshold, musicBedDb };
 }
 
@@ -1074,14 +1250,14 @@ function rerunCurrentAudioSettings() {
     }];
     const analysis = {
       gaps,
-      musicBedDb: percentile(lastAudioFrames.map((frame) => frame.voiceDb), 0.2),
-      threshold: Math.max(Number(silenceThresholdInput.value), percentile(lastAudioFrames.map((frame) => frame.voiceDb), 0.2) + Number(speechLiftInput.value)),
+      ...getCutoffDetails(lastAudioFrames),
     };
+    updateCutoffStatus(analysis);
     lastAnalysis = analysis;
     updateGapSummary(gaps);
     renderGapRows(gaps);
     drawWaveform(lastAudioFrames, analysis);
-    setAdStatus(`Marked the full ${formatTimestamp(duration)} runtime as available because Treat as no dialogue is on.`);
+    setAdStatus("Marked the full " + formatTimestamp(duration) + " runtime as available because Treat as no dialogue is on.");
     return;
   }
 
@@ -1091,9 +1267,9 @@ function rerunCurrentAudioSettings() {
   renderGapRows(analysis.gaps);
   drawWaveform(lastAudioFrames, analysis);
   if (analysis.gaps.length) {
-    setAdStatus(`Rechecked settings. Estimated music bed ${analysis.musicBedDb.toFixed(1)} dB; speech cutoff ${analysis.threshold.toFixed(1)} dB.`);
+    setAdStatus("Rechecked settings. Estimated music bed " + analysis.musicBedDb.toFixed(1) + " dB; speech cutoff " + analysis.threshold.toFixed(1) + " dB.");
   } else {
-    setAdStatus(`No openings with current settings. Estimated music bed ${analysis.musicBedDb.toFixed(1)} dB; speech cutoff ${analysis.threshold.toFixed(1)} dB.`);
+    setAdStatus("No openings with current settings. Estimated music bed " + analysis.musicBedDb.toFixed(1) + " dB; speech cutoff " + analysis.threshold.toFixed(1) + " dB.");
   }
 }
 
@@ -1105,13 +1281,14 @@ function resetGapSummary() {
   gapCount.textContent = "0";
   totalGapTime.textContent = "0.0s";
   maxSuggestedWords.textContent = "0";
+  updateCutoffStatus();
   updateScriptStats();
   drawWaveform([], null);
 }
 
 function updateGapSummary(gaps) {
   gapCount.textContent = String(gaps.length);
-  totalGapTime.textContent = `${gaps.reduce((sum, gap) => sum + gap.duration, 0).toFixed(1)}s`;
+  totalGapTime.textContent = gaps.reduce((sum, gap) => sum + gap.duration, 0).toFixed(1) + "s";
   maxSuggestedWords.textContent = String(Math.max(0, ...gaps.map((gap) => gap.suggestedWords)));
   updateScriptStats();
 }
@@ -1119,6 +1296,246 @@ function updateGapSummary(gaps) {
 async function decodeAudioFromBuffer(arrayBuffer) {
   const decodeContext = new OfflineAudioContext(1, 1, 44100);
   return decodeContext.decodeAudioData(arrayBuffer.slice(0));
+}
+
+function getTsPayload(packet, packetStart) {
+  const adaptationFieldControl = (packet[packetStart + 3] >> 4) & 3;
+  if (adaptationFieldControl === 0 || adaptationFieldControl === 2) return null;
+
+  let payloadStart = packetStart + 4;
+  if (adaptationFieldControl === 3) {
+    payloadStart += 1 + packet[packetStart + 4];
+  }
+
+  if (payloadStart >= packetStart + 188) return null;
+  return packet.subarray(payloadStart, packetStart + 188);
+}
+
+function parseTsSection(payload) {
+  if (!payload?.length) return null;
+  const pointer = payload[0] || 0;
+  const sectionStart = 1 + pointer;
+  if (sectionStart + 3 > payload.length) return null;
+  const sectionLength = ((payload[sectionStart + 1] & 0x0f) << 8) | payload[sectionStart + 2];
+  if (sectionStart + 3 + sectionLength > payload.length) return null;
+  return payload.subarray(sectionStart, sectionStart + 3 + sectionLength);
+}
+
+function findTsAudioPids(bytes) {
+  const audioPids = new Set();
+  const pmtPids = new Set();
+
+  for (let offset = 0; offset + 188 <= bytes.length; offset += 188) {
+    if (bytes[offset] !== 0x47) continue;
+    const pid = ((bytes[offset + 1] & 0x1f) << 8) | bytes[offset + 2];
+    const payloadUnitStart = Boolean(bytes[offset + 1] & 0x40);
+    if (!payloadUnitStart) continue;
+    const payload = getTsPayload(bytes, offset);
+    if (!payload) continue;
+
+    if (pid === 0) {
+      const section = parseTsSection(payload);
+      if (!section || section[0] !== 0x00) continue;
+      const sectionLength = ((section[1] & 0x0f) << 8) | section[2];
+      const entryEnd = 3 + sectionLength - 4;
+      for (let index = 8; index + 4 <= entryEnd; index += 4) {
+        const programNumber = (section[index] << 8) | section[index + 1];
+        if (programNumber) {
+          pmtPids.add(((section[index + 2] & 0x1f) << 8) | section[index + 3]);
+        }
+      }
+      continue;
+    }
+
+    if (pmtPids.has(pid)) {
+      const section = parseTsSection(payload);
+      if (!section || section[0] !== 0x02) continue;
+      const sectionLength = ((section[1] & 0x0f) << 8) | section[2];
+      const programInfoLength = ((section[10] & 0x0f) << 8) | section[11];
+      let index = 12 + programInfoLength;
+      const entryEnd = 3 + sectionLength - 4;
+      while (index + 5 <= entryEnd) {
+        const streamType = section[index];
+        const elementaryPid = ((section[index + 1] & 0x1f) << 8) | section[index + 2];
+        const esInfoLength = ((section[index + 3] & 0x0f) << 8) | section[index + 4];
+        if ([0x03, 0x04, 0x0f, 0x11].includes(streamType)) {
+          audioPids.add(elementaryPid);
+        }
+        index += 5 + esInfoLength;
+      }
+    }
+  }
+
+  return audioPids;
+}
+
+function extractAudioFromTsSegment(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  if (bytes.length < 188 || bytes[0] !== 0x47) return null;
+
+  const audioPids = findTsAudioPids(bytes);
+  if (!audioPids.size) return null;
+
+  const chunks = [];
+  for (let offset = 0; offset + 188 <= bytes.length; offset += 188) {
+    if (bytes[offset] !== 0x47) continue;
+    const pid = ((bytes[offset + 1] & 0x1f) << 8) | bytes[offset + 2];
+    if (!audioPids.has(pid)) continue;
+
+    const payload = getTsPayload(bytes, offset);
+    if (!payload?.length) continue;
+
+    const payloadUnitStart = Boolean(bytes[offset + 1] & 0x40);
+    if (payloadUnitStart && payload.length > 9 && payload[0] === 0x00 && payload[1] === 0x00 && payload[2] === 0x01) {
+      const headerLength = 9 + payload[8];
+      if (headerLength < payload.length) {
+        chunks.push(payload.subarray(headerLength));
+      }
+    } else if (!payloadUnitStart) {
+      chunks.push(payload);
+    }
+  }
+
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  if (!totalLength) return null;
+
+  const audioBytes = new Uint8Array(totalLength);
+  let writeOffset = 0;
+  for (const chunk of chunks) {
+    audioBytes.set(chunk, writeOffset);
+    writeOffset += chunk.length;
+  }
+
+  return audioBytes.buffer;
+}
+
+function waitForMediaMetadata(mediaElement) {
+  if (Number.isFinite(mediaElement.duration) && mediaElement.duration > 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      mediaElement.removeEventListener("loadedmetadata", handleLoaded);
+      mediaElement.removeEventListener("error", handleError);
+    };
+    const handleLoaded = () => {
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("metadata-failed"));
+    };
+    mediaElement.addEventListener("loadedmetadata", handleLoaded, { once: true });
+    mediaElement.addEventListener("error", handleError, { once: true });
+    mediaElement.load();
+  });
+}
+
+async function capturePlayableMediaAudio(sourceName) {
+  const captureStream = videoPreview.captureStream || videoPreview.mozCaptureStream;
+  if (!captureStream) {
+    throw new Error("capture-not-supported");
+  }
+
+  await waitForMediaMetadata(videoPreview);
+  const duration = Number(videoPreview.duration);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error("duration-unavailable");
+  }
+
+  const audioContext = new AudioContext();
+  const stream = captureStream.call(videoPreview);
+  const source = audioContext.createMediaStreamSource(stream);
+  const processor = audioContext.createScriptProcessor(4096, 2, 1);
+  const silentGain = audioContext.createGain();
+  const chunks = [];
+  let sampleCount = 0;
+
+  processor.onaudioprocess = (event) => {
+    const input = event.inputBuffer;
+    const frameCount = input.length;
+    const mixed = new Float32Array(frameCount);
+    const channels = Math.max(1, input.numberOfChannels);
+    for (let channelIndex = 0; channelIndex < channels; channelIndex += 1) {
+      const channel = input.getChannelData(channelIndex);
+      for (let index = 0; index < frameCount; index += 1) {
+        mixed[index] += channel[index] / channels;
+      }
+    }
+    chunks.push(mixed);
+    sampleCount += frameCount;
+  };
+
+  silentGain.gain.value = 0;
+  source.connect(processor);
+  processor.connect(silentGain);
+  silentGain.connect(audioContext.destination);
+
+  const originalMuted = videoPreview.muted;
+  const originalPlaybackRate = videoPreview.playbackRate;
+  const originalCurrentTime = videoPreview.currentTime;
+  const originalPreservesPitch = videoPreview.preservesPitch;
+
+  videoPreview.muted = true;
+  videoPreview.playbackRate = 4;
+  if ("preservesPitch" in videoPreview) videoPreview.preservesPitch = false;
+  videoPreview.currentTime = 0;
+  try {
+    await audioContext.resume();
+
+    setAdStatus("Direct segment decode failed. Capturing playable video audio at 4x speed...");
+    await videoPreview.play();
+    await new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("capture-timeout"));
+      }, Math.max(20000, (duration / Math.max(0.25, videoPreview.playbackRate)) * 1000 + 12000));
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        videoPreview.removeEventListener("ended", handleEnded);
+        videoPreview.removeEventListener("error", handleError);
+      };
+      const handleEnded = () => {
+        cleanup();
+        resolve();
+      };
+      const handleError = () => {
+        cleanup();
+        reject(new Error("capture-playback-failed"));
+      };
+      videoPreview.addEventListener("ended", handleEnded, { once: true });
+      videoPreview.addEventListener("error", handleError, { once: true });
+    });
+  } finally {
+    videoPreview.pause();
+    videoPreview.muted = originalMuted;
+    videoPreview.playbackRate = originalPlaybackRate;
+    if ("preservesPitch" in videoPreview) videoPreview.preservesPitch = originalPreservesPitch;
+    videoPreview.currentTime = originalCurrentTime || 0;
+    processor.disconnect();
+    source.disconnect();
+    silentGain.disconnect();
+    stream.getTracks().forEach((track) => track.stop());
+  }
+
+  if (!sampleCount) {
+    await audioContext.close();
+    throw new Error("no-captured-audio");
+  }
+
+  const captured = new Float32Array(sampleCount);
+  let offset = 0;
+  for (const chunk of chunks) {
+    captured.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  const audioBuffer = audioContext.createBuffer(1, captured.length, audioContext.sampleRate);
+  audioBuffer.copyToChannel(captured, 0);
+  await audioContext.close();
+  return audioBuffer;
 }
 
 function combineAudioBuffers(audioBuffers) {
@@ -1164,23 +1581,23 @@ async function analyzeDecodedAudioBuffer(audioBuffer, sourceName) {
   renderGapRows(gaps);
   drawWaveform(frames, analysis);
   if (gaps.length) {
-    setAdStatus(`Analyzed ${formatTimestamp(audioBuffer.duration)} from ${sourceName}. Estimated music bed ${musicBedDb.toFixed(1)} dB; speech cutoff ${threshold.toFixed(1)} dB.`);
+    setAdStatus("Analyzed " + formatTimestamp(audioBuffer.duration) + " from " + sourceName + ". Estimated music bed " + musicBedDb.toFixed(1) + " dB; speech cutoff " + threshold.toFixed(1) + " dB.");
   } else {
-    setAdStatus(`No openings found in ${sourceName}. Estimated music bed ${musicBedDb.toFixed(1)} dB; speech cutoff ${threshold.toFixed(1)} dB.`);
+    setAdStatus("No openings found in " + sourceName + ". Estimated music bed " + musicBedDb.toFixed(1) + " dB; speech cutoff " + threshold.toFixed(1) + " dB.");
   }
 }
 
 async function analyzeAudioBuffer(arrayBuffer, sourceName) {
   resetGapSummary();
   renderGapRows([]);
-  setAdStatus(`Decoding audio from ${sourceName}...`);
+  setAdStatus("Decoding audio from " + sourceName + "...");
 
   let audioBuffer;
   try {
     audioBuffer = await decodeAudioFromBuffer(arrayBuffer);
   } catch {
     clearVideoPreview();
-    setAdStatus(`This browser could not decode ${sourceName}. Try an MP4, MOV, M4A, MP3, WAV, or a local file export. HLS video-only or MPEG-TS segments need conversion before analysis.`);
+    setAdStatus("This browser could not decode " + sourceName + ". Try an MP4, MOV, M4A, MP3, WAV, or a local file export. HLS video-only or MPEG-TS segments need conversion before analysis.");
     return;
   }
 
@@ -1208,7 +1625,7 @@ function normalizeVideoAddress(value) {
   const trimmed = value.trim();
   const quaverVodId = trimmed.match(/^(?:smil:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.smil)?$/i);
   if (!quaverVodId) return trimmed;
-  return `https://dashvideo.quavermusic.com/QuaverVOD/smil:${quaverVodId[1]}.smil/playlist.m3u8`;
+  return "https://dashvideo.quavermusic.com/QuaverVOD/smil:" + quaverVodId[1] + ".smil/playlist.m3u8";
 }
 
 function getSmilMediaCandidates(smilText, smilUrl) {
@@ -1296,15 +1713,16 @@ function chooseM3u8Variant(variants) {
   return [...variants].sort((a, b) => b.bandwidth - a.bandwidth)[0];
 }
 
+function isM3u8AudioDescription(rendition) {
+  return /(^|[^a-z])ad([^a-z]|$)|audio description|descriptive audio|describes-video|description/i
+    .test([rendition.name, rendition.language, rendition.characteristics].join(" "));
+}
+
 function chooseM3u8AudioRendition(audioRenditions, audioGroup = "") {
   const candidates = audioGroup
     ? audioRenditions.filter((rendition) => rendition.groupId === audioGroup)
     : audioRenditions;
-  const isAudioDescription = (rendition) => (
-    /(^|[^a-z])ad([^a-z]|$)|audio description|descriptive audio|describes-video|description/i
-      .test(`${rendition.name} ${rendition.language} ${rendition.characteristics}`)
-  );
-  const nonAd = candidates.filter((rendition) => !isAudioDescription(rendition));
+  const nonAd = candidates.filter((rendition) => !isM3u8AudioDescription(rendition));
   return nonAd.find((rendition) => rendition.default)
     || nonAd.find((rendition) => rendition.autoselect)
     || nonAd[0]
@@ -1319,7 +1737,7 @@ function buildPlayableHlsPlaylist(playlistText, playlistUrl) {
   let pendingStreamInfo = false;
   const serializeMediaAttributes = (attributes) => Object.entries(attributes).map(([key, value]) => {
     const shouldQuote = ["GROUP-ID", "LANGUAGE", "NAME", "URI", "CHARACTERISTICS", "CHANNELS"].includes(key);
-    return shouldQuote ? `${key}="${value}"` : `${key}=${value}`;
+    return shouldQuote ? key + "=\"" + value + "\"" : key + "=" + value;
   }).join(",");
 
   return playlistText.replace(/\r/g, "").split("\n").map((line) => {
@@ -1333,7 +1751,7 @@ function buildPlayableHlsPlaylist(playlistText, playlistUrl) {
         attributes.URI = absoluteUri;
         attributes.DEFAULT = isSelected ? "YES" : "NO";
         attributes.AUTOSELECT = isSelected ? "YES" : attributes.AUTOSELECT || "NO";
-        return `${prefix}${serializeMediaAttributes(attributes)}`;
+        return prefix + serializeMediaAttributes(attributes);
       }
     }
 
@@ -1351,6 +1769,44 @@ function buildPlayableHlsPlaylist(playlistText, playlistUrl) {
   }).join("\n");
 }
 
+async function getM3u8SegmentSources(playlistText, playlistUrl) {
+  const parsed = parseM3u8Playlist(playlistText, playlistUrl);
+  const variant = chooseM3u8Variant(parsed.variants) || {};
+  const sources = [];
+  const seen = new Set();
+
+  const addSource = (source) => {
+    if (!source?.url || seen.has(source.url)) return;
+    seen.add(source.url);
+    sources.push(source);
+  };
+
+  if (parsed.audioRenditions.length) {
+    const groupRenditions = variant.audioGroup
+      ? parsed.audioRenditions.filter((rendition) => rendition.groupId === variant.audioGroup)
+      : parsed.audioRenditions;
+    const nonAdRenditions = groupRenditions.filter((rendition) => !isM3u8AudioDescription(rendition));
+    const selected = chooseM3u8AudioRendition(parsed.audioRenditions, variant.audioGroup);
+    addSource({ label: selected?.name || "selected audio", url: selected?.url });
+    nonAdRenditions
+      .filter((rendition) => rendition.url !== selected?.url)
+      .forEach((rendition) => addSource({ label: rendition.name || "alternate audio", url: rendition.url }));
+    parsed.audioRenditions
+      .filter((rendition) => !isM3u8AudioDescription(rendition) && rendition.url !== selected?.url)
+      .forEach((rendition) => addSource({ label: rendition.name || "alternate audio", url: rendition.url }));
+  }
+
+  parsed.variants
+    .sort((a, b) => b.bandwidth - a.bandwidth)
+    .forEach((item) => addSource({ label: "variant playlist", url: item.url }));
+
+  if (!sources.length && parsed.segments.length) {
+    sources.push({ label: "media playlist", segments: parsed.segments.map((segment) => segment.url) });
+  }
+
+  return sources;
+}
+
 async function resolveM3u8Segments(playlistText, playlistUrl) {
   let parsed = parseM3u8Playlist(playlistText, playlistUrl);
 
@@ -1358,13 +1814,13 @@ async function resolveM3u8Segments(playlistText, playlistUrl) {
     const variant = chooseM3u8Variant(parsed.variants) || {};
     const rendition = chooseM3u8AudioRendition(parsed.audioRenditions, variant.audioGroup);
     if (rendition) {
-      setAdStatus(`HLS audio playlist found: ${rendition.name || "audio"}. Fetching audio segments...`);
+      setAdStatus("HLS audio playlist found: " + (rendition.name || "audio") + ". Fetching audio segments...");
       const audioResponse = await fetchMediaFromUrl(rendition.url);
       parsed = parseM3u8Playlist(await audioResponse.blob.text(), rendition.url);
     }
   } else if (parsed.variants.length) {
     const variant = chooseM3u8Variant(parsed.variants);
-    setAdStatus(`HLS master playlist found. Fetching variant playlist...`);
+    setAdStatus("HLS master playlist found. Fetching variant playlist...");
     const variantResponse = await fetchMediaFromUrl(variant.url);
     parsed = parseM3u8Playlist(await variantResponse.blob.text(), variant.url);
   }
@@ -1380,7 +1836,7 @@ async function fetchM3u8AsBlob(playlistText, playlistUrl) {
 
   const parts = [];
   for (let index = 0; index < segmentUrls.length; index += 1) {
-    setAdStatus(`Fetching HLS segment ${index + 1} of ${segmentUrls.length}...`);
+    setAdStatus("Fetching HLS segment " + (index + 1) + " of " + segmentUrls.length + "...");
     const segment = await fetchMediaFromUrl(segmentUrls[index]);
     parts.push(await segment.blob.arrayBuffer());
   }
@@ -1394,24 +1850,76 @@ async function fetchM3u8AsBlob(playlistText, playlistUrl) {
   return new Blob(parts, { type });
 }
 
-async function fetchM3u8AsAudioBuffer(playlistText, playlistUrl) {
-  const segmentUrls = await resolveM3u8Segments(playlistText, playlistUrl);
+async function decodeM3u8SegmentUrls(segmentUrls, sourceLabel) {
   if (!segmentUrls.length) {
     throw new Error("no-segments");
   }
 
   const audioBuffers = [];
+  const segmentParts = [];
+  let skippedSegments = 0;
   for (let index = 0; index < segmentUrls.length; index += 1) {
-    setAdStatus(`Decoding HLS audio segment ${index + 1} of ${segmentUrls.length}...`);
+    setAdStatus("Decoding " + sourceLabel + " segment " + (index + 1) + " of " + segmentUrls.length + "...");
     const segment = await fetchMediaFromUrl(segmentUrls[index]);
+    const segmentBuffer = await segment.blob.arrayBuffer();
+    segmentParts.push(segmentBuffer);
     try {
-      audioBuffers.push(await decodeAudioFromBuffer(await segment.blob.arrayBuffer()));
+      audioBuffers.push(await decodeAudioFromBuffer(segmentBuffer));
     } catch {
-      throw new Error("segment-decode-failed");
+      const extractedAudio = extractAudioFromTsSegment(segmentBuffer);
+      if (extractedAudio) {
+        try {
+          audioBuffers.push(await decodeAudioFromBuffer(extractedAudio));
+        } catch {
+          skippedSegments += 1;
+        }
+      } else {
+        skippedSegments += 1;
+      }
     }
   }
 
-  return combineAudioBuffers(audioBuffers);
+  if (audioBuffers.length) {
+    if (skippedSegments) {
+      setAdStatus("Decoded " + audioBuffers.length + " " + sourceLabel + " segments; skipped " + skippedSegments + " segment" + (skippedSegments === 1 ? "" : "s") + " this browser could not decode.");
+    }
+    return combineAudioBuffers(audioBuffers);
+  }
+
+  try {
+    setAdStatus("Trying stitched " + sourceLabel + " decode...");
+    const firstSegment = segmentUrls[0].split("?")[0].toLowerCase();
+    const type = firstSegment.endsWith(".aac") ? "audio/aac" : "video/mp2t";
+    const stitchedBlob = new Blob(segmentParts, { type });
+    return await decodeAudioFromBuffer(await stitchedBlob.arrayBuffer());
+  } catch {
+    throw new Error("segment-decode-failed");
+  }
+}
+
+async function fetchM3u8AsAudioBuffer(playlistText, playlistUrl) {
+  const sources = await getM3u8SegmentSources(playlistText, playlistUrl);
+  if (!sources.length) {
+    throw new Error("no-segments");
+  }
+
+  const failures = [];
+  for (const source of sources) {
+    try {
+      let segmentUrls = source.segments;
+      if (!segmentUrls) {
+        setAdStatus("Trying HLS audio source: " + source.label + "...");
+        const playlistResponse = await fetchMediaFromUrl(source.url);
+        const parsed = parseM3u8Playlist(await playlistResponse.blob.text(), source.url);
+        segmentUrls = parsed.segments.map((segment) => segment.url);
+      }
+      return await decodeM3u8SegmentUrls(segmentUrls, source.label);
+    } catch (error) {
+      failures.push(source.label + " (" + error.message + ")");
+    }
+  }
+
+  throw new Error("segment-decode-failed:" + failures.join(", "));
 }
 
 async function fetchMediaFromUrl(url) {
@@ -1423,7 +1931,7 @@ async function fetchMediaFromUrl(url) {
   }
 
   if (!response.ok) {
-    throw new Error(`http-${response.status}`);
+    throw new Error("http-" + response.status);
   }
 
   return {
@@ -1449,7 +1957,7 @@ async function analyzeVideoUrl() {
   } catch (error) {
     clearVideoPreview();
     if (error.message.startsWith("http-")) {
-      setAdStatus(`The address returned HTTP ${error.message.replace("http-", "")}.`);
+      setAdStatus("The address returned HTTP " + error.message.replace("http-", "") + ".");
       return;
     }
     setAdStatus("The video address could not be fetched. If the site blocks browser access, download the file and load it locally.");
@@ -1469,7 +1977,7 @@ async function analyzeVideoUrl() {
     }
 
     const mediaUrl = candidates[0];
-    setAdStatus(`SMIL points to ${mediaUrl}. Fetching referenced media...`);
+    setAdStatus("SMIL points to " + mediaUrl + ". Fetching referenced media...");
     try {
       const media = await fetchMediaFromUrl(mediaUrl);
       blob = media.blob;
@@ -1492,12 +2000,18 @@ async function analyzeVideoUrl() {
     } catch (error) {
       if (error.message === "no-segments") {
         setAdStatus("The HLS playlist did not list media segments this browser can follow.");
-      } else if (error.message === "segment-decode-failed") {
-        setAdStatus("The HLS audio playlist was readable, but an audio segment could not be decoded in this browser.");
+      } else if (error.message.startsWith("segment-decode-failed")) {
+        try {
+          const capturedAudio = await capturePlayableMediaAudio("the playable HLS video");
+          await analyzeDecodedAudioBuffer(capturedAudio, "the playable HLS video");
+          return;
+        } catch {
+          setAdStatus("The HLS playlist was readable and the video may play, but this browser could not extract audio for analysis.");
+        }
       } else {
         setAdStatus("The HLS playlist was readable, but its audio segments could not be fetched by the browser.");
+        clearVideoPreview();
       }
-      clearVideoPreview();
       return;
     }
   } else {
@@ -1544,7 +2058,7 @@ async function loadImageFile(file) {
   sourceImage = image;
   drawSourceToOriginalCanvas(image);
   showCanvas();
-  setStatus(`Loaded image: ${file.name}`);
+  setStatus("Loaded image: " + file.name);
   URL.revokeObjectURL(url);
 }
 
@@ -1566,7 +2080,7 @@ async function renderPdfPage(pageNumber) {
   sourceImage = await canvasToImage(renderCanvas);
   drawSourceToOriginalCanvas(sourceImage);
   showCanvas();
-  setStatus(`Rendered PDF page ${pageNumber} of ${activePdf.numPages}.`);
+  setStatus("Rendered PDF page " + pageNumber + " of " + activePdf.numPages + ".");
 }
 
 async function loadPdfFile(file) {
@@ -1590,7 +2104,7 @@ async function loadPdfFile(file) {
   for (let page = 1; page <= activePdf.numPages; page += 1) {
     const option = document.createElement("option");
     option.value = String(page);
-    option.textContent = `Page ${page}`;
+    option.textContent = "Page " + page;
     pageSelect.append(option);
   }
   pdfControls.classList.remove("hidden");
@@ -1667,7 +2181,7 @@ pageSelect.addEventListener("change", async () => {
 downloadButton.addEventListener("click", () => {
   const link = document.createElement("a");
   const effectName = effectSelect.value;
-  link.download = `a11y-${effectName}.png`;
+  link.download = "a11y-" + effectName + ".png";
   link.href = effectCanvas.toDataURL("image/png");
   link.click();
 });
@@ -1679,14 +2193,15 @@ videoFileInput.addEventListener("change", () => analyzeVideoFile(videoFileInput.
 scriptFileInput.addEventListener("change", async () => {
   const file = scriptFileInput.files[0];
   if (!file) return;
+  loadedScriptFileName = file.name || "audio-description-script.txt";
   scriptInput.value = await file.text();
-  spokenScriptItemIds.clear();
   updateScriptStats();
+  resetTtsTimelineToCurrentPosition();
   rerunCurrentAudioSettings();
 });
 scriptInput.addEventListener("input", () => {
-  spokenScriptItemIds.clear();
   updateScriptStats();
+  resetTtsTimelineToCurrentPosition();
   rerunCurrentAudioSettings();
 });
 videoPreview.addEventListener("timeupdate", updatePlaybackIndicators);
@@ -1695,7 +2210,11 @@ videoPreview.addEventListener("seeking", () => {
   updatePlaybackIndicators();
 });
 videoPreview.addEventListener("play", () => {
-  resetUpcomingTts();
+  if (isResumingAfterExtendedAd) {
+    isResumingAfterExtendedAd = false;
+  } else {
+    resetUpcomingTts();
+  }
   updatePlaybackIndicators();
 });
 videoPreview.addEventListener("pause", () => {
@@ -1730,12 +2249,14 @@ ttsVoiceSelect.addEventListener("change", () => {
   isExtendedAdPause = false;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 });
+saveScriptButton.addEventListener("click", saveScript);
 ttsSyncToggle.addEventListener("change", () => {
-  spokenScriptItemIds.clear();
+  resetTtsTimelineToCurrentPosition();
   isExtendedAdPause = false;
   if (!ttsSyncToggle.checked && "speechSynthesis" in window) window.speechSynthesis.cancel();
 });
 extendedAdToggle.addEventListener("change", () => {
+  resetTtsTimelineToCurrentPosition();
   isExtendedAdPause = false;
   if (!extendedAdToggle.checked && "speechSynthesis" in window) window.speechSynthesis.cancel();
 });

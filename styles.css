@@ -165,6 +165,13 @@ textarea:focus-visible,
   font-weight: 700;
 }
 
+.control-hint {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .control-group .file-button {
   color: #fff;
 }
@@ -213,9 +220,17 @@ textarea {
 }
 
 .notes {
-  margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+}
+
+.ad-status-card {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel-strong);
 }
 
 .notes h2 {
@@ -288,7 +303,7 @@ textarea {
 
 .waveform-tools {
   display: grid;
-  grid-template-columns: 34px auto minmax(120px, 220px) 34px;
+  grid-template-columns: 34px auto minmax(120px, 220px) 34px max-content;
   align-items: center;
   gap: 8px;
 }
@@ -298,6 +313,16 @@ textarea {
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.waveform-tools .checkbox-row {
+  color: var(--text);
+  font-weight: 400;
+}
+
+.waveform-follow-control input {
+  width: 16px;
+  height: 16px;
 }
 
 .icon-button {
@@ -450,7 +475,7 @@ textarea {
 
 .script-actions {
   display: grid;
-  grid-template-columns: max-content max-content max-content minmax(120px, 170px) max-content minmax(160px, 1fr) max-content;
+  grid-template-columns: max-content max-content max-content minmax(120px, 170px) max-content minmax(150px, 1fr) max-content max-content;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
@@ -757,6 +782,10 @@ canvas {
   .waveform-tools {
     grid-template-columns: 34px minmax(64px, auto) minmax(120px, 1fr) 34px;
     margin-top: 10px;
+  }
+
+  .waveform-follow-control {
+    grid-column: 1 / -1;
   }
 
   .waveform-legend {

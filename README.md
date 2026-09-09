@@ -80,11 +80,14 @@ Use the controls to adjust the review:
 
 - `AD speech rate`: words per second used for script-fit math and recommended word capacity.
 - `Waveform zoom`: expands the waveform horizontally. Use the slider or the `-` and `+` buttons in the waveform header.
-- `Speech threshold dB`: absolute speech-band level treated as likely no-dialogue.
-- `Speech lift over music`: how far above the estimated music bed audio must rise before it is treated as speech.
+- `Follow playhead`: keeps the zoomed waveform scrolled near the current playback position. Turn it off to inspect one part of the waveform manually.
+- `Base speech cutoff dB`: absolute speech-band level treated as likely no-dialogue.
+- `Adaptive cutoff over music`: how far above the estimated music bed audio must rise before it is treated as speech.
 - `Minimum quiet gap`: shortest likely no-dialogue window worth listing.
 - `Breathing room per gap`: time reserved so AD does not crowd dialogue.
 - `Treat as no dialogue`: use only when you know the whole asset has no dialogue.
+
+The active speech cutoff uses whichever is stricter: the base speech cutoff or the adaptive music-bed cutoff. If changing `Base speech cutoff dB` does not move the results, the adaptive cutoff may currently be higher. The sidebar shows the active cutoff after analysis.
 
 The result lists likely no-dialogue windows, duration, estimated AD word capacity, script fit, and average voice-band/mix levels. Because finished videos may have background music, the analyzer uses a speech-frequency-band heuristic instead of pure silence. Treat it as a fast triage pass and spot-check promising windows in playback.
 
@@ -114,6 +117,16 @@ Timestamped lines such as this are matched to overlapping gaps:
 00:09 - 00:11 - Quaver speaks. A staff with notes on the lines appears.
 ```
 
+Single-timestamp cue lines are also supported:
+
+```text
+00:09 - Two hands give a thumbs-up.
+00:27 The hand rotates to show the fulcrum from a front and side angle.
+```
+
+For single-timestamp lines, TTS starts at that timestamp. Script-fit warnings use the space until the next cue as the cue's working window.
+If you paste a script with many single timestamps, each timestamp is split into its own cue even when the text wraps, contains blank lines, or a line is missing the dash after the timestamp.
+
 The `Script Cues` panel shows each timed cue. Click a cue to jump the video and waveform to that cue. Cues turn red when they do not fit the detected gap or appear to overlap dialogue. Each cue shows a recommended words-per-second rate based on the available gap length and the script words provided.
 
 The `Gaps Without Script` panel lists detected gaps that do not have matching AD script. Click one to jump to that gap.
@@ -123,7 +136,10 @@ Turn on `Speak script during playback` to preview timed script lines with browse
 - `TTS speed` to change how fast the browser reads the script.
 - `Voice` to pick a system/browser voice.
 - `Pause for extended AD` to pause the video, read the cue with TTS, then resume playback when the cue finishes.
+- `Save script` to save your edited script. Browsers that support the File System Access API will show a save dialog; other browsers download a `.txt` file.
 - `Stop TTS` to cancel the current reading.
+
+With `Pause for extended AD` enabled, the video pauses as playback reaches each timestamped cue, reads only that cue, then resumes. If you seek into the middle of a video, cues before the current playhead are skipped so an earlier timestamp does not read late.
 
 On macOS, browser TTS uses the voices exposed by the browser through the Web Speech API. In Chrome or Safari, installed macOS voices should appear in the `Voice` menu after the page loads. If the menu looks incomplete, refresh the page or try Safari.
 
@@ -145,7 +161,7 @@ https://dashvideo.quavermusic.com/QuaverVOD/smil:9e467af4-5479-4c26-a393-c445a32
 
 For SMIL, the app reads the XML and follows the first `video`, `audio`, `ref`, or `media` `src` it finds. Relative URLs are resolved from the SMIL address. Browser-fetch limits still apply, and legacy streaming protocols such as `rtsp:` or `mms:` cannot be decoded in the browser.
 
-For HLS `.m3u8`, the app reads the playlist and prefers a normal non-AD `TYPE=AUDIO` rendition when one is present. It avoids common AD labels such as `English_AD`, `Audio Description`, `Descriptive Audio`, and `public.accessibility.describes-video`. If the playlist does not mark normal audio as default, the app creates an in-memory preview playlist that selects the normal audio track. AAC audio segments are decoded one by one and stitched together for analysis.
+For HLS `.m3u8`, the app reads the playlist and prefers a normal non-AD `TYPE=AUDIO` rendition when one is present. It avoids common AD labels such as `English_AD`, `Audio Description`, `Descriptive Audio`, and `public.accessibility.describes-video`. If the playlist does not mark normal audio as default, the app creates an in-memory preview playlist that selects the normal audio track. AAC audio segments are decoded one by one and stitched together for analysis. For HLS variants that use MPEG-TS `.ts` media segments, the local app extracts the audio payload from the transport stream before decoding. If one non-AD audio rendition cannot be decoded, the local app tries other non-AD audio sources before giving up.
 
 HLS streams with encrypted audio, blocked CORS, video-only playlists, or MPEG-TS-only media may still need a server-side ffmpeg/transmux step or a downloaded MP4/MOV export.
 

@@ -97,9 +97,18 @@
           </div>
 
           <div class="control-group">
+            <button id="analyzeAudioButton" type="button">Analyze video audio</button>
+          </div>
+
+          <div class="notes ad-status-card">
+            <h2>Auditor Notes</h2>
+            <p id="adStatusText">Paste a video, SMIL, HLS URL, Quaver VOD ID, or load a video file, then analyze likely AD openings in the audio.</p>
+          </div>
+
+          <div class="control-group">
             <label for="videoFileInput">Video file</label>
             <label class="file-button secondary">
-              Load video
+              Load video from file
               <input id="videoFileInput" type="file" accept="video/*,audio/*">
             </label>
           </div>
@@ -110,13 +119,15 @@
           </div>
 
           <div class="control-group">
-            <label for="silenceThresholdInput">Speech threshold dB</label>
+            <label for="silenceThresholdInput">Base speech cutoff dB</label>
             <input id="silenceThresholdInput" type="number" min="-80" max="-10" step="1" value="-45">
+            <p class="control-hint">Frames below the active cutoff are treated as likely no-dialogue.</p>
           </div>
 
           <div class="control-group">
-            <label for="speechLiftInput">Speech lift over music</label>
+            <label for="speechLiftInput">Adaptive cutoff over music</label>
             <input id="speechLiftInput" type="number" min="1" max="24" step="1" value="8">
+            <p id="cutoffStatusText" class="control-hint">Active cutoff appears after analysis.</p>
           </div>
 
           <div class="control-group">
@@ -144,19 +155,11 @@
             </label>
           </div>
 
-          <div class="control-group">
-            <button id="analyzeAudioButton" type="button">Analyze video audio</button>
-          </div>
-
-          <div class="notes">
-            <h2>Auditor Notes</h2>
-            <p id="adStatusText">Paste a video, SMIL, or HLS URL, or load a video file, then analyze likely AD openings in the audio.</p>
-          </div>
         </aside>
 
         <section class="ad-main">
           <div class="video-review">
-            <video id="videoPreview" controls preload="metadata"></video>
+            <video id="videoPreview" controls preload="metadata" crossorigin="anonymous"></video>
           </div>
 
           <section class="waveform-panel" aria-label="Audio level visualization">
@@ -167,6 +170,10 @@
                 <label for="waveformZoomInput">Zoom <span id="waveformZoomValue">1x</span></label>
                 <input id="waveformZoomInput" type="range" min="1" max="12" step="0.5" value="1">
                 <button id="waveformZoomInButton" class="icon-button" type="button" aria-label="Zoom waveform in">+</button>
+                <label class="checkbox-row waveform-follow-control">
+                  <input id="waveformFollowToggle" type="checkbox" checked>
+                  Follow playhead
+                </label>
               </div>
               <div class="waveform-legend">
                 <span><i class="legend-mix"></i>Full mix</span>
@@ -222,6 +229,7 @@
               <select id="ttsVoiceSelect">
                 <option value="">System default</option>
               </select>
+              <button id="saveScriptButton" type="button">Save script</button>
               <button id="stopTtsButton" type="button">Stop TTS</button>
             </div>
             <textarea id="scriptInput" spellcheck="true" placeholder="Paste proposed audio description copy here. The table will show whether the full script fits each detected gap."></textarea>
@@ -266,6 +274,6 @@
       </section>
     </main>
 
-    <script src="app.js" type="module"></script>
+    <script src="app.js?v=20260908-tts-stale-cue-fix" type="module"></script>
   </body>
 </html>
