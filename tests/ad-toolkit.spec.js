@@ -3,6 +3,7 @@ const fs = require("node:fs");
 
 const hlsUrl = "9e467af4-5479-4c26-a393-c445a32acd19";
 const expandedHlsUrl = "https://dashvideo.quavermusic.com/QuaverVOD/smil:9e467af4-5479-4c26-a393-c445a32acd19.smil/playlist.m3u8";
+const directVideoUrl = "https://cdn.example.com/media/Lesson%201.mp4";
 const scriptPath = "C:/Users/DanielW1814/Downloads/Lines and Spaces Episode.txt";
 const singleTimestampScript = `00:00 - How to Grip the Stick. In the background, two pairs of hands reach toward the center, one from the left and the other from the right, with open palms facing downward and fingers wiggling.\\
 \\
@@ -255,4 +256,31 @@ test("AD analyzer loads HLS audio, draws waveform, zooms, and evaluates script f
   ));
   expect(appErrors).toEqual([]);
   expect(pageErrors).toEqual([]);
+});
+
+test("AD analyzer creates and opens direct video links with file names", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "AD gap analyzer" }).click();
+
+  await page.locator("#videoUrlInput").fill(directVideoUrl);
+  await page.locator("#videoNameInput").fill("Lesson 1 video.mp4");
+  await page.getByRole("button", { name: "Create analyzer link" }).click();
+
+  const generatedLink = page.locator("#videoLinkOutput a");
+  await expect(generatedLink).toHaveText("Lesson 1 video.mp4");
+  const href = await generatedLink.getAttribute("href");
+  const linkUrl = new URL(href);
+  expect(linkUrl.searchParams.get("mode")).toBe("ad");
+  expect(linkUrl.searchParams.get("video")).toBe(directVideoUrl);
+  expect(linkUrl.searchParams.get("name")).toBe("Lesson 1 video.mp4");
+
+  await expect(page.locator("#adStatusText")).toContainText("Opened Lesson 1 video.mp4");
+  await expect(page.locator("#videoPreview")).toHaveJSProperty("src", directVideoUrl);
+
+  await page.goto(href);
+  await expect(page.locator("#adWorkspace")).toBeVisible();
+  await expect(page.locator("#videoUrlInput")).toHaveValue(directVideoUrl);
+  await expect(page.locator("#videoNameInput")).toHaveValue("Lesson 1 video.mp4");
+  await expect(page.locator("#videoPreview")).toHaveJSProperty("src", directVideoUrl);
+  await expect(page.locator("#adStatusText")).toContainText("Opened Lesson 1 video.mp4");
 });

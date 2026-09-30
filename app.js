@@ -22,6 +22,9 @@ const effectCanvas = document.querySelector("#effectCanvas");
 const originalCtx = originalCanvas.getContext("2d", { willReadFrequently: true });
 const effectCtx = effectCanvas.getContext("2d", { willReadFrequently: true });
 const videoUrlInput = document.querySelector("#videoUrlInput");
+const videoNameInput = document.querySelector("#videoNameInput");
+const createVideoLinkButton = document.querySelector("#createVideoLinkButton");
+const videoLinkOutput = document.querySelector("#videoLinkOutput");
 const videoFileInput = document.querySelector("#videoFileInput");
 const videoPreview = document.querySelector("#videoPreview");
 const speechRateInput = document.querySelector("#speechRateInput");
@@ -109,6 +112,19 @@ function setStatus(message) {
 
 function setAdStatus(message) {
   adStatusText.textContent = message;
+}
+
+function getVideoDisplayName(url, fallbackName = "") {
+  const trimmedFallback = fallbackName.trim();
+  if (trimmedFallback) return trimmedFallback;
+
+  try {
+    const parsedUrl = new URL(url, window.location.href);
+    const pathName = decodeURIComponent(parsedUrl.pathname.split("/").filter(Boolean).pop() || "");
+    return pathName || "linked video";
+  } catch {
+    return "linked video";
+  }
 }
 
 function clearVideoPreview() {
@@ -1628,6 +1644,58 @@ function normalizeVideoAddress(value) {
   return "https://dashvideo.quavermusic.com/QuaverVOD/smil:" + quaverVodId[1] + ".smil/playlist.m3u8";
 }
 
+function getAnalyzerLink(url, fileName) {
+  const normalizedUrl = normalizeVideoAddress(url);
+  if (!normalizedUrl) return "";
+
+  const link = new URL(window.location.href);
+  link.hash = "";
+  link.search = "";
+  link.searchParams.set("mode", "ad");
+  link.searchParams.set("video", normalizedUrl);
+  const displayName = fileName.trim();
+  if (displayName) link.searchParams.set("name", displayName);
+  return link.href;
+}
+
+function loadLinkedVideo(url, fileName = "") {
+  const normalizedUrl = normalizeVideoAddress(url);
+  if (!normalizedUrl) {
+    setAdStatus("Enter a video address before creating or opening an analyzer link.");
+    return false;
+  }
+
+  const displayName = getVideoDisplayName(normalizedUrl, fileName);
+  videoUrlInput.value = normalizedUrl;
+  videoNameInput.value = displayName === "linked video" ? "" : displayName;
+  videoPreview.src = normalizedUrl;
+  videoPreview.load();
+  setMode("ad");
+  setAdStatus("Opened " + displayName + " in the analyzer. Click Analyze video audio to scan AD openings.");
+  return true;
+}
+
+function createAnalyzerLink() {
+  const analyzerLink = getAnalyzerLink(videoUrlInput.value, videoNameInput.value);
+  videoLinkOutput.textContent = "";
+
+  if (!analyzerLink) {
+    videoLinkOutput.classList.add("hidden");
+    setAdStatus("Enter a video address before creating an analyzer link.");
+    return;
+  }
+
+  const fileName = getVideoDisplayName(normalizeVideoAddress(videoUrlInput.value), videoNameInput.value);
+  const anchor = document.createElement("a");
+  anchor.href = analyzerLink;
+  anchor.textContent = fileName;
+  anchor.target = "_blank";
+  anchor.rel = "noopener";
+  videoLinkOutput.append(anchor);
+  videoLinkOutput.classList.remove("hidden");
+  loadLinkedVideo(videoUrlInput.value, videoNameInput.value);
+}
+
 function getSmilMediaCandidates(smilText, smilUrl) {
   const documentXml = new DOMParser().parseFromString(smilText, "application/xml");
   if (documentXml.querySelector("parsererror")) return [];
@@ -2188,6 +2256,7 @@ downloadButton.addEventListener("click", () => {
 
 visualModeButton.addEventListener("click", () => setMode("visual"));
 adModeButton.addEventListener("click", () => setMode("ad"));
+createVideoLinkButton.addEventListener("click", createAnalyzerLink);
 analyzeAudioButton.addEventListener("click", analyzeVideoUrl);
 videoFileInput.addEventListener("change", () => analyzeVideoFile(videoFileInput.files[0]));
 scriptFileInput.addEventListener("change", async () => {
@@ -2281,7 +2350,18 @@ window.addEventListener("resize", () => {
 
 syncCompareView();
 refreshZoom();
-setMode("visual");
+const initialParams = new URLSearchParams(window.location.search);
+if (initialParams.get("mode") === "ad" || initialParams.has("video")) {
+  const linkedVideo = initialParams.get("video") || "";
+  const linkedName = initialParams.get("name") || "";
+  if (linkedVideo) {
+    loadLinkedVideo(linkedVideo, linkedName);
+  } else {
+    setMode("ad");
+  }
+} else {
+  setMode("visual");
+}
 updateScriptStats();
 refreshTtsRate();
 populateTtsVoices();

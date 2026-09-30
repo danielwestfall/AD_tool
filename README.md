@@ -76,6 +76,8 @@ The interface uses high-contrast colors for the main controls and AD review stat
 2. Paste a direct video address, a SMIL address, an HLS `.m3u8` address, a Quaver VOD ID, or load a local video/audio file.
 3. Click `Analyze video audio`.
 
+To make a shareable analyzer link, paste the video address, enter the file name in `File name for link`, and click `Create analyzer link`. The generated link opens the app in AD mode, preloads the video preview, and leaves the address ready for `Analyze video audio`.
+
 Use the controls to adjust the review:
 
 - `AD speech rate`: words per second used for script-fit math and recommended word capacity.
